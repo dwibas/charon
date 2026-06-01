@@ -4,7 +4,7 @@ import { now, json } from '../utils.js';
 import { db } from '../db/connection.js';
 import { escapeHtml, fmtPct, fmtSol, fmtUsd, short, gmgnLink } from '../format.js';
 import { numSetting } from '../db/settings.js';
-import { candidateSummary, compactCandidateLine, batchRevealSummary, formatPosition } from './format.js';
+import { candidateSummary, compactCandidateLine, batchRevealSummary, formatDecisionConfidence, formatPosition } from './format.js';
 import { candidateButtons, batchRevealButtons, positionButtons, intentButtons } from './menus.js';
 import { batchById } from '../db/decisions.js';
 
@@ -49,7 +49,7 @@ export async function sendBatch(chatId, batchId) {
   const lines = [
     '🧭 <b>Screening Batch</b>',
     '',
-    `Batch: <b>#${batchId}</b> · Decision: <b>${escapeHtml(batch.verdict)}</b> ${fmtPct(batch.confidence)}`,
+    `Batch: <b>#${batchId}</b> · Decision: <b>${escapeHtml(batch.verdict)}</b> · Confidence: ${formatDecisionConfidence(batch)}`,
     batch.reason ? `Reason: ${escapeHtml(String(batch.reason).slice(0, 500))}` : null,
     '',
     ...batch.rows.map((row, index) => compactCandidateLine(row, index + 1)),

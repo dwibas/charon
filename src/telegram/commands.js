@@ -29,8 +29,13 @@ import { handleCallback, editMenuMessage } from './callbacks.js';
 import { consumeNumericFilterInput } from './input.js';
 import { runLearning, sendLessons } from '../learning/commands.js';
 import { fetchWalletPnl } from '../enrichment/wallets.js';
+import { isAuthorizedTelegramMessage, logUnauthorizedTelegram } from './auth.js';
 
 export async function handleMessage(msg) {
+  if (!isAuthorizedTelegramMessage(msg, TELEGRAM_CHAT_ID)) {
+    logUnauthorizedTelegram('message', msg?.chat?.id, TELEGRAM_CHAT_ID);
+    return;
+  }
   const text = (msg.text || '').trim();
   const chatId = msg.chat.id;
   if (await consumeNumericFilterInput(chatId, text, msg.message_id)) return;
@@ -134,6 +139,7 @@ export async function handleMessage(msg) {
       'default_sl_percent',
       'default_trailing_enabled',
       'default_trailing_percent',
+      'allow_llm_tp_sl',
     ]);
     if (!valid.has(key) || value == null) {
       return bot.sendMessage(chatId, `Usage: /setfilter &lt;name&gt; &lt;value&gt;\n\n${filtersText()}`, { parse_mode: 'HTML' });
@@ -154,8 +160,25 @@ export async function sendCandidate(chatId, id) {
   });
 }
 
+async function refreshedPositionsForDisplay(limit = 12) {
+  const rows = allPositions(limit);
+  const refreshedRows = [];
+  for (const row of rows) {
+    if (row.status !== 'open') {
+      refreshedRows.push(row);
+      continue;
+    }
+    const refreshed = await refreshPosition(row, { autoExit: row.execution_mode !== 'live' }).catch((err) => {
+      console.log(`[position] refresh ${row.id} ${err.message}`);
+      return null;
+    });
+    refreshedRows.push(refreshed ? { ...row, ...refreshed } : row);
+  }
+  return refreshedRows;
+}
+
 export async function sendPositions(chatId) {
-  const rows = allPositions(12);
+  const rows = await refreshedPositionsForDisplay(12);
   const text = rows.length ? rows.map(formatPosition).join('\n\n') : 'No dry-run positions yet.';
   await bot.sendMessage(chatId, `📍 <b>Positions</b>\n\n${text}`, { parse_mode: 'HTML', disable_web_page_preview: true });
 }
@@ -179,8 +202,11 @@ export async function closePosition(chatId, id, reason) {
   const row = db.prepare('SELECT * FROM dry_run_positions WHERE id = ?').get(id);
   if (!row || row.status !== 'open') return bot.sendMessage(chatId, 'Open position not found.');
   const result = await refreshPosition(row, { autoExit: false });
-  const price = result?.price ?? row.high_water_price ?? row.entry_price;
-  const mcap = result?.mcap ?? row.high_water_mcap ?? row.entry_mcap;
+  if (!result) {
+    return bot.sendMessage(chatId, `Could not refresh position #${id}; refusing to close with stale market data. Try again later.`, { parse_mode: 'HTML' });
+  }
+  const price = result.price;
+  const mcap = result.mcap;
   const pnlPercent = row.entry_mcap ? (Number(mcap) / Number(row.entry_mcap) - 1) * 100 : 0;
   const pnlSol = Number(row.size_sol) * pnlPercent / 100;
   let sell = null;

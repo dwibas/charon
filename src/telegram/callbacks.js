@@ -25,8 +25,14 @@ import { createDryRunPosition, canOpenMorePositions, openPositionCount, tradingM
 import { executeLiveBuy, executeConfirmedIntent, rejectIntent } from '../execution/router.js';
 import { sendCandidate, sendPosition, closePosition, updatePositionRule, toggleTrailing } from './commands.js';
 import { requestNumericFilterInput, requestStrategyNumericInput } from './input.js';
+import { isAuthorizedTelegramCallback, logUnauthorizedTelegram } from './auth.js';
 
 export async function handleCallback(query) {
+  if (!isAuthorizedTelegramCallback(query, TELEGRAM_CHAT_ID)) {
+    logUnauthorizedTelegram('callback', query?.message?.chat?.id, TELEGRAM_CHAT_ID);
+    await answerCallback(query, 'Unauthorized').catch(() => {});
+    return;
+  }
   const data = query.data || '';
   const chatId = query.message?.chat?.id || TELEGRAM_CHAT_ID;
   await answerCallback(query);
@@ -52,7 +58,7 @@ export async function handleCallback(query) {
   if (data === 'menu:filters') return editMenuMessage(query, filtersText(), filtersKeyboard());
   if (data === 'menu:strategy') return editMenuMessage(query, strategyMenuText(), strategyKeyboard());
   if (data === 'menu:wallets') return editMenuMessage(query, walletsText(), navKeyboard());
-  if (data === 'menu:positions') return editMenuMessage(query, positionsText(), navKeyboard());
+  if (data === 'menu:positions') return editMenuMessage(query, await positionsText(), navKeyboard());
   if (data === 'menu:pnl') {
     const { sendPnl } = await import('./send.js');
     return sendPnl(chatId, query);
@@ -105,7 +111,7 @@ export async function handleCallback(query) {
       await executeLiveBuy(row, decision, 'manual', [row], row.id);
       return;
     }
-    const positionId = await createDryRunPosition(row.id, candidate, decision, 'manual_buy');
+    const position = await createDryRunPosition(row.id, candidate, decision, 'manual_buy');
     logDecisionEvent({
       batchId: 'manual',
       triggerCandidateId: row.id,
@@ -113,10 +119,10 @@ export async function handleCallback(query) {
       rows: [row],
       decision,
       mode: tradingMode(),
-      action: 'manual_dry_run_entry',
-      execution: { positionId },
+      action: position.created ? 'manual_dry_run_entry' : 'entry_skipped_existing_position',
+      execution: { positionId: position.positionId, created: position.created },
     });
-    return sendPositionOpen(positionId);
+    return position.created ? sendPositionOpen(position.positionId) : bot.sendMessage(chatId, `Already have an open position for this mint (#${position.positionId}).`);
   }
   if (kind === 'tpsl') return sendTpSlDefaults(chatId, query);
   if (kind === 'pos') return sendPosition(chatId, Number(id), query);
@@ -248,13 +254,14 @@ async function updateSettingFromButton(query, key, value) {
     'default_sl_percent',
     'default_trailing_enabled',
     'default_trailing_percent',
+    'allow_llm_tp_sl',
   ]);
   if (!valid.has(key) || value == null) return bot.sendMessage(chatId, 'Unknown setting.');
   setSetting(key, value);
-  const text = key.startsWith('default_') || key === 'dry_run_buy_sol' || key === 'trading_mode' || key === 'llm_min_confidence' || key === 'llm_candidate_pick_count' || key === 'llm_candidate_max_age_ms' || key === 'max_open_positions'
+  const text = key.startsWith('default_') || key === 'allow_llm_tp_sl' || key === 'dry_run_buy_sol' || key === 'trading_mode' || key === 'llm_min_confidence' || key === 'llm_candidate_pick_count' || key === 'llm_candidate_max_age_ms' || key === 'max_open_positions'
     ? agentText()
     : filtersText();
-  const extra = key.startsWith('default_') || key === 'dry_run_buy_sol' || key === 'trading_mode' || key === 'llm_min_confidence' || key === 'llm_candidate_pick_count' || key === 'llm_candidate_max_age_ms' || key === 'max_open_positions'
+  const extra = key.startsWith('default_') || key === 'allow_llm_tp_sl' || key === 'dry_run_buy_sol' || key === 'trading_mode' || key === 'llm_min_confidence' || key === 'llm_candidate_pick_count' || key === 'llm_candidate_max_age_ms' || key === 'max_open_positions'
     ? agentKeyboard()
     : filtersKeyboard();
   return editMenuMessage(query, text, extra);

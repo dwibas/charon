@@ -2,6 +2,7 @@ import { db } from '../db/connection.js';
 import { now, json } from '../utils.js';
 import { fetchJupiterAsset } from '../enrichment/jupiter.js';
 import { firstPositiveNumber } from '../utils.js';
+import { cleanupOperationalData, logCleanupResult } from '../db/cleanup.js';
 
 let candidateHandler = null;
 
@@ -112,7 +113,6 @@ export async function monitorPriceAlerts() {
 
 // Clean up old alerts periodically
 export function cleanupAlerts() {
-  const cutoff = now() - 7 * 24 * 60 * 60 * 1000; // 7 days
-  const result = db.prepare("DELETE FROM price_alerts WHERE status IN ('triggered', 'expired') AND created_at_ms < ?").run(cutoff);
-  if (result.changes > 0) console.log(`[dip] cleaned ${result.changes} old alerts`);
+  const result = cleanupOperationalData(db);
+  logCleanupResult(result, '[dip] cleanup');
 }

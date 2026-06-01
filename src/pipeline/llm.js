@@ -1,8 +1,9 @@
 import axios from 'axios';
-import { ENABLE_LLM, LLM_API_KEY, LLM_BASE_URL, LLM_MODEL, LLM_TIMEOUT_MS } from '../config.js';
+import { CODEX_CLI_TIMEOUT_MS, ENABLE_LLM, LLM_API_KEY, LLM_BASE_URL, LLM_MODEL, LLM_PROVIDER, LLM_TIMEOUT_MS } from '../config.js';
 import { now, stripThinking, strictJsonFromText } from '../utils.js';
 import { numSetting } from '../db/settings.js';
 import { db } from '../db/connection.js';
+import { decideWithCodexCli } from './codexCli.js';
 
 export function normalizeDecision(parsed, fallbackReason = '') {
   const verdict = ['BUY', 'WATCH', 'PASS'].includes(String(parsed?.verdict).toUpperCase())
@@ -66,13 +67,15 @@ export function compactCandidateForLlm(row) {
 }
 
 export async function decideCandidateBatch(rows, triggerCandidateId) {
-  if (!ENABLE_LLM || !LLM_API_KEY) {
+  const provider = String(LLM_PROVIDER || 'openai_compatible').toLowerCase();
+  const usingCodexCli = provider === 'codex_cli';
+  if (!ENABLE_LLM || (!usingCodexCli && !LLM_API_KEY)) {
     return {
       verdict: 'WATCH',
       confidence: 0,
       selected_candidate_id: null,
       selected_mint: null,
-      reason: 'LLM disabled or LLM_API_KEY missing.',
+      reason: !ENABLE_LLM ? 'LLM disabled.' : 'LLM_API_KEY missing.',
       risks: ['no_llm_decision'],
       suggested_tp_percent: numSetting('default_tp_percent', 50),
       suggested_sl_percent: numSetting('default_sl_percent', -25),
@@ -88,6 +91,7 @@ export async function decideCandidateBatch(rows, triggerCandidateId) {
     'Use verdict BUY only for the single best unusually strong asymmetric opportunity.',
     'Use WATCH if candidates are interesting but none deserves a buy.',
     'Use PASS if the set is weak or unsafe.',
+    'For confidence, score conviction in your verdict, not buy probability. For WATCH/PASS, do not return 0 unless you are uncertain or the model cannot decide.',
     'Chart data is ATH/range context. Do not penalize or reward a token only because 24h change is huge; new Pump tokens often do that.',
     'Use distance from ATH/range high and top-blast risk to decide whether entry is late.',
     'Confidence is your conviction from 0 to 100, not probability.',
@@ -108,6 +112,17 @@ export async function decideCandidateBatch(rows, triggerCandidateId) {
     trigger_candidate_id: triggerCandidateId,
     candidates: rows.map(compactCandidateForLlm),
   };
+
+  if (usingCodexCli) {
+    return decideWithCodexCli({
+      rows,
+      system,
+      user,
+      normalizeDecision,
+      timeoutMs: CODEX_CLI_TIMEOUT_MS,
+      cwd: process.cwd(),
+    });
+  }
 
   try {
     const res = await axios.post(`${LLM_BASE_URL.replace(/\/$/, '')}/chat/completions`, {

@@ -4,7 +4,7 @@ import { openPositionCount, tradingMode, allPositions } from '../db/positions.js
 import { savedWallets } from '../enrichment/wallets.js';
 import { gmgnStatusText } from '../enrichment/gmgn.js';
 import { formatPosition } from './format.js';
-import { ENABLE_LLM, LLM_API_KEY } from '../config.js';
+import { ENABLE_LLM, LLM_API_KEY, LLM_PROVIDER } from '../config.js';
 
 export function menuKeyboard() {
   return {
@@ -120,13 +120,14 @@ export function agentText() {
     `Strategy: <b>${escapeHtml(strat.name)}</b>`,
     `Agent: <b>${boolSetting('agent_enabled', true) ? 'on' : 'off'}</b>`,
     `Mode: <b>${escapeHtml(tradingMode())}</b>`,
-    `LLM: <b>${strat.use_llm && ENABLE_LLM && LLM_API_KEY ? 'configured' : 'disabled'}</b>`,
+    `LLM: <b>${strat.use_llm && ENABLE_LLM && (String(LLM_PROVIDER).toLowerCase() === 'codex_cli' || LLM_API_KEY) ? escapeHtml(LLM_PROVIDER) : 'disabled'}</b>`,
     `Confidence: ${fmtPct(strat.llm_min_confidence || numSetting('llm_min_confidence', 75))}`,
     `Open positions: ${openPositionCount()}/${strat.max_open_positions || 'unlimited'}`,
     `Batch candidates: ${numSetting('llm_candidate_pick_count', 10)}`,
     `Candidate freshness: ${Math.round(numSetting('llm_candidate_max_age_ms', 600000) / 1000)}s`,
     `Size: ${fmtSol(strat.position_size_sol)} SOL`,
     `TP/SL: ${fmtPct(strat.tp_percent)} / ${fmtPct(strat.sl_percent)}`,
+    `LLM TP/SL override: <b>${boolSetting('allow_llm_tp_sl', false) ? 'on' : 'off'}</b>`,
     `Trailing: ${strat.trailing_enabled ? fmtPct(strat.trailing_percent) : 'off'}`,
   ].join('\n');
 }
@@ -155,6 +156,7 @@ export function agentKeyboard() {
           { text: 'Fresh 10m', callback_data: 'set:llm_candidate_max_age_ms:600000' },
           { text: 'Fresh 20m', callback_data: 'set:llm_candidate_max_age_ms:1200000' },
         ],
+        [{ text: `LLM TP/SL ${boolSetting('allow_llm_tp_sl', false) ? 'On' : 'Off'}`, callback_data: `set:allow_llm_tp_sl:${boolSetting('allow_llm_tp_sl', false) ? 'false' : 'true'}` }],
         [{ text: 'Back', callback_data: 'menu:main' }],
       ],
     },
@@ -184,9 +186,22 @@ export function walletsText() {
   return `👛 <b>Saved Wallets</b>\n\n${body}`;
 }
 
-export function positionsText() {
+export async function positionsText() {
   const rows = allPositions(12);
-  const text = rows.length ? rows.map(formatPosition).join('\n\n') : 'No dry-run positions yet.';
+  const refreshedRows = [];
+  const { refreshPosition } = await import('../execution/positions.js');
+  for (const row of rows) {
+    if (row.status !== 'open') {
+      refreshedRows.push(row);
+      continue;
+    }
+    const refreshed = await refreshPosition(row, { autoExit: row.execution_mode !== 'live' }).catch((err) => {
+      console.log(`[position] menu refresh ${row.id} ${err.message}`);
+      return null;
+    });
+    refreshedRows.push(refreshed ? { ...row, ...refreshed } : row);
+  }
+  const text = refreshedRows.length ? refreshedRows.map(formatPosition).join('\n\n') : 'No dry-run positions yet.';
   return `📍 <b>Positions</b>\n\n${text}`;
 }
 

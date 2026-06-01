@@ -30,7 +30,7 @@ export async function executeLiveBuy(selectedRow, decision, batchId, rows = [], 
   if (!swap.outputAmount) {
     swap.outputAmount = await fetchLiveTokenBalance(selectedRow.candidate.token.mint) || swap.outputAmount;
   }
-  const positionId = createLivePosition(selectedRow.id, selectedRow.candidate, decision, swap, `live_batch_${batchId}`);
+  const position = createLivePosition(selectedRow.id, selectedRow.candidate, decision, swap, `live_batch_${batchId}`);
   logDecisionEvent({
     batchId,
     triggerCandidateId,
@@ -38,11 +38,11 @@ export async function executeLiveBuy(selectedRow, decision, batchId, rows = [], 
     rows,
     decision,
     mode: 'live',
-    action: 'live_entry_executed',
+    action: position.created ? 'live_entry_executed' : 'entry_skipped_existing_position',
     guardrails: { balanceLamports: balance, amountLamports, minReserveLamports: LIVE_MIN_SOL_RESERVE_LAMPORTS },
-    execution: { positionId, swap },
+    execution: { positionId: position.positionId, created: position.created, swap },
   });
-  await sendPositionOpen(positionId);
+  if (position.created) await sendPositionOpen(position.positionId);
 }
 
 export async function executeLiveSell(position, reason) {
@@ -92,7 +92,7 @@ export async function executeConfirmedIntent(chatId, intentId) {
     if (!swap.outputAmount) {
       swap.outputAmount = await fetchLiveTokenBalance(freshRow.candidate.token.mint) || swap.outputAmount;
     }
-    const positionId = createLivePosition(intent.candidate_id, freshRow.candidate, decision, swap, `confirmed_intent_${intentId}`);
+    const position = createLivePosition(intent.candidate_id, freshRow.candidate, decision, swap, `confirmed_intent_${intentId}`);
     db.prepare('UPDATE trade_intents SET status = ?, updated_at_ms = ? WHERE id = ?').run('executed_live', now(), intentId);
     logDecisionEvent({
       batchId: null,
@@ -101,11 +101,11 @@ export async function executeConfirmedIntent(chatId, intentId) {
       rows: [],
       decision,
       mode: 'live',
-      action: 'confirmed_intent_executed',
+      action: position.created ? 'confirmed_intent_executed' : 'entry_skipped_existing_position',
       guardrails: { balanceLamports: balance, amountLamports, intentId },
-      execution: { positionId, swap },
+      execution: { positionId: position.positionId, created: position.created, swap },
     });
-    return sendPositionOpen(positionId);
+    return position.created ? sendPositionOpen(position.positionId) : bot.sendMessage(chatId, `Already have an open position for this mint (#${position.positionId}).`);
   } catch (err) {
     db.prepare('UPDATE trade_intents SET status = ?, updated_at_ms = ? WHERE id = ?').run('execution_failed', now(), intentId);
     return bot.sendMessage(chatId, `Live execution failed: ${escapeHtml(err.message)}`, { parse_mode: 'HTML' });

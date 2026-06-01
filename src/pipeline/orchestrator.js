@@ -5,7 +5,7 @@ import { storeDecision, storeBatchDecision, logDecisionEvent } from '../db/decis
 import { buildCandidate, filterCandidate, signalLabel } from './candidateBuilder.js';
 import { decideCandidateBatch } from './llm.js';
 import { activeStrategy } from '../db/settings.js';
-import { createDryRunPosition, createLivePosition, canOpenMorePositions, openPositionCount, tradingMode } from '../db/positions.js';
+import { createDryRunPosition, createLivePosition, canOpenMorePositions, openPositionCount, tradingMode, openPositionForMint, lastClosedPositionForMint, sameMintCooldownMs } from '../db/positions.js';
 import { sendBatchReveal, sendTelegram, sendPositionOpen, sendTradeIntent } from '../telegram/send.js';
 import { candidateSummary } from '../telegram/format.js';
 import { createTradeIntent } from '../db/intents.js';
@@ -16,6 +16,9 @@ import { setDegenHandler } from '../signals/trending.js';
 import { setCandidateHandler } from '../signals/feeClaim.js';
 import { short } from '../format.js';
 import { escapeHtml } from '../format.js';
+import { approvedByLlmThreshold } from '../trading/risk.js';
+import { shouldSkipSameMintEntry } from '../trading/entryGuards.js';
+import { shouldSuppressCodexFailureNotification } from './codexCli.js';
 
 export const seenSignalCandidates = new Map();
 
@@ -85,9 +88,10 @@ export async function processCandidateFromSignals(signals) {
     batchDecision.id = currentDecisionId;
   }
 
-  if (batchId) await sendBatchReveal(batchId, rows, batchDecision, candidateId);
+  if (batchId && !shouldSuppressCodexFailureNotification(batchDecision)) await sendBatchReveal(batchId, rows, batchDecision, candidateId);
 
-  if (selectedRow && boolSetting('agent_enabled', true) && batchDecision.verdict === 'BUY' && batchDecision.confidence >= numSetting('llm_min_confidence', 75)) {
+  const confidenceThreshold = strat.llm_min_confidence ?? numSetting('llm_min_confidence', 75);
+  if (selectedRow && boolSetting('agent_enabled', true) && approvedByLlmThreshold(batchDecision, strat, { globalLlmMinConfidence: numSetting('llm_min_confidence', 75) })) {
     if (!canOpenMorePositions()) {
       const max = numSetting('max_open_positions', 3);
       console.log(`[agent] max open positions reached (${openPositionCount()}/${max}), skipping buy ${selectedRow.candidate.token.mint}`);
@@ -113,7 +117,7 @@ export async function processCandidateFromSignals(signals) {
       action: selectedRow ? 'entry_not_approved' : 'no_candidate_selected',
       guardrails: {
         agentEnabled: boolSetting('agent_enabled', true),
-        confidenceThreshold: numSetting('llm_min_confidence', 75),
+        confidenceThreshold,
         openPositions: openPositionCount(),
         maxOpenPositions: numSetting('max_open_positions', 3),
       },
@@ -151,7 +155,28 @@ export async function handleApprovedBuy(selectedRow, decision, batchId, rows = [
   }
 
   if (mode === 'dry_run') {
-    const positionId = await createDryRunPosition(freshSelectedRow.id, freshSelectedRow.candidate, decision, `llm_batch_${batchId}`);
+    const sameMint = shouldSkipSameMintEntry({
+      openPosition: openPositionForMint(freshSelectedRow.candidate.token.mint),
+      lastClosedPosition: lastClosedPositionForMint(freshSelectedRow.candidate.token.mint),
+      nowMs: now(),
+      cooldownMs: sameMintCooldownMs(),
+    });
+    if (sameMint.skip) {
+      logDecisionEvent({
+        batchId,
+        triggerCandidateId,
+        selectedRow: freshSelectedRow,
+        rows: executionRows,
+        decision,
+        mode,
+        action: sameMint.reason === 'open_position' ? 'entry_skipped_existing_position' : 'entry_skipped_same_mint_cooldown',
+        guardrails: { sameMint, cooldownMs: sameMintCooldownMs(), maxOpenPositions: numSetting('max_open_positions', 3), openPositions: openPositionCount() },
+        execution: { positionId: sameMint.positionId, created: false },
+      });
+      return;
+    }
+
+    const position = await createDryRunPosition(freshSelectedRow.id, freshSelectedRow.candidate, decision, `llm_batch_${batchId}`);
     logDecisionEvent({
       batchId,
       triggerCandidateId,
@@ -159,11 +184,11 @@ export async function handleApprovedBuy(selectedRow, decision, batchId, rows = [
       rows: executionRows,
       decision,
       mode,
-      action: 'dry_run_entry',
+      action: position.created ? 'dry_run_entry' : 'entry_skipped_existing_position',
       guardrails: { maxOpenPositions: numSetting('max_open_positions', 3), openPositions: openPositionCount() },
-      execution: { positionId },
+      execution: { positionId: position.positionId, created: position.created },
     });
-    await sendPositionOpen(positionId);
+    if (position.created) await sendPositionOpen(position.positionId);
     return;
   }
 

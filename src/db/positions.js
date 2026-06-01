@@ -1,6 +1,8 @@
 import { db } from './connection.js';
 import { now, json } from '../utils.js';
 import { numSetting, boolSetting, setting, activeStrategy } from './settings.js';
+import { resolvePositionRisk } from '../trading/risk.js';
+import { positionCreationResult } from '../trading/entryGuards.js';
 
 export function openPositions() {
   return db.prepare('SELECT * FROM dry_run_positions WHERE status = ? ORDER BY opened_at_ms DESC').all('open');
@@ -8,6 +10,18 @@ export function openPositions() {
 
 export function openPositionCount() {
   return db.prepare('SELECT COUNT(*) AS count FROM dry_run_positions WHERE status = ?').get('open').count;
+}
+
+export function openPositionForMint(mint) {
+  return db.prepare("SELECT * FROM dry_run_positions WHERE mint = ? AND status = 'open' ORDER BY opened_at_ms DESC LIMIT 1").get(mint) || null;
+}
+
+export function lastClosedPositionForMint(mint) {
+  return db.prepare("SELECT * FROM dry_run_positions WHERE mint = ? AND status = 'closed' ORDER BY closed_at_ms DESC LIMIT 1").get(mint) || null;
+}
+
+export function sameMintCooldownMs() {
+  return numSetting('same_mint_cooldown_ms', 60 * 60 * 1000);
 }
 
 export function canOpenMorePositions() {
@@ -31,16 +45,23 @@ export function createDryRunPosition(candidateId, candidate, decision, reason = 
   const sizeSol = strat.position_size_sol ?? numSetting('dry_run_buy_sol', 0.1);
   const entryPrice = Number(candidate.metrics.priceUsd || 0) || null;
   const entryMcap = Number(candidate.metrics.marketCapUsd || candidate.metrics.graduatedMarketCapUsd || 0) || null;
-  const tp = Number(decision.suggested_tp_percent || strat.tp_percent || numSetting('default_tp_percent', 50));
-  const sl = Number(decision.suggested_sl_percent || strat.sl_percent || numSetting('default_sl_percent', -25));
-  const trailingEnabled = (strat.trailing_enabled ?? boolSetting('default_trailing_enabled', true)) ? 1 : 0;
-  const trailingPercent = strat.trailing_percent ?? numSetting('default_trailing_percent', 20);
+  const risk = resolvePositionRisk({
+    strategy: strat,
+    decision,
+    settings: {
+      defaultTpPercent: numSetting('default_tp_percent', 50),
+      defaultSlPercent: numSetting('default_sl_percent', -25),
+      defaultTrailingEnabled: boolSetting('default_trailing_enabled', true),
+      defaultTrailingPercent: numSetting('default_trailing_percent', 20),
+      allowLlmTpSl: boolSetting('allow_llm_tp_sl', false),
+    },
+  });
 
   return db.transaction(() => {
     const existing = db.prepare(`
       SELECT id FROM dry_run_positions WHERE mint = ? AND status = 'open' LIMIT 1
     `).get(candidate.token.mint);
-    if (existing) return existing.id;
+    if (existing) return positionCreationResult({ existingId: existing.id });
 
     const result = db.prepare(`
       INSERT INTO dry_run_positions (
@@ -59,10 +80,10 @@ export function createDryRunPosition(candidateId, candidate, decision, reason = 
       null,
       entryPrice,
       entryMcap,
-      tp,
-      sl,
-      trailingEnabled,
-      trailingPercent,
+      risk.tpPercent,
+      risk.slPercent,
+      risk.trailingEnabled,
+      risk.trailingPercent,
       decision.id || null,
       strat.id,
       json({ candidate, decision, reason, strategy: strat.id }),
@@ -75,8 +96,8 @@ export function createDryRunPosition(candidateId, candidate, decision, reason = 
     db.prepare(`
       INSERT INTO tp_sl_rules (position_id, tp_percent, sl_percent, trailing_enabled, trailing_percent, updated_at_ms)
       VALUES (?, ?, ?, ?, ?, ?)
-    `).run(positionId, tp, sl, trailingEnabled, trailingPercent, now());
-    return positionId;
+    `).run(positionId, risk.tpPercent, risk.slPercent, risk.trailingEnabled, risk.trailingPercent, now());
+    return positionCreationResult({ insertedId: positionId });
   })();
 }
 
@@ -85,16 +106,23 @@ export function createLivePosition(candidateId, candidate, decision, swap, reaso
   const sizeSol = strat.position_size_sol ?? numSetting('dry_run_buy_sol', 0.1);
   const entryPrice = Number(candidate.metrics.priceUsd || 0) || null;
   const entryMcap = Number(candidate.metrics.marketCapUsd || candidate.metrics.graduatedMarketCapUsd || 0) || null;
-  const tp = Number(decision.suggested_tp_percent || strat.tp_percent || numSetting('default_tp_percent', 50));
-  const sl = Number(decision.suggested_sl_percent || strat.sl_percent || numSetting('default_sl_percent', -25));
-  const trailingEnabled = (strat.trailing_enabled ?? boolSetting('default_trailing_enabled', true)) ? 1 : 0;
-  const trailingPercent = strat.trailing_percent ?? numSetting('default_trailing_percent', 20);
+  const risk = resolvePositionRisk({
+    strategy: strat,
+    decision,
+    settings: {
+      defaultTpPercent: numSetting('default_tp_percent', 50),
+      defaultSlPercent: numSetting('default_sl_percent', -25),
+      defaultTrailingEnabled: boolSetting('default_trailing_enabled', true),
+      defaultTrailingPercent: numSetting('default_trailing_percent', 20),
+      allowLlmTpSl: boolSetting('allow_llm_tp_sl', false),
+    },
+  });
 
   return db.transaction(() => {
     const existing = db.prepare(`
       SELECT id FROM dry_run_positions WHERE mint = ? AND status = 'open' LIMIT 1
     `).get(candidate.token.mint);
-    if (existing) return existing.id;
+    if (existing) return positionCreationResult({ existingId: existing.id });
 
     const result = db.prepare(`
       INSERT INTO dry_run_positions (
@@ -114,10 +142,10 @@ export function createLivePosition(candidateId, candidate, decision, swap, reaso
       null,
       entryPrice,
       entryMcap,
-      tp,
-      sl,
-      trailingEnabled,
-      trailingPercent,
+      risk.tpPercent,
+      risk.slPercent,
+      risk.trailingEnabled,
+      risk.trailingPercent,
       decision.id || null,
       swap.signature,
       swap.outputAmount || null,
@@ -132,7 +160,7 @@ export function createLivePosition(candidateId, candidate, decision, swap, reaso
     db.prepare(`
       INSERT INTO tp_sl_rules (position_id, tp_percent, sl_percent, trailing_enabled, trailing_percent, updated_at_ms)
       VALUES (?, ?, ?, ?, ?, ?)
-    `).run(positionId, tp, sl, trailingEnabled, trailingPercent, now());
-    return positionId;
+    `).run(positionId, risk.tpPercent, risk.slPercent, risk.trailingEnabled, risk.trailingPercent, now());
+    return positionCreationResult({ insertedId: positionId });
   })();
 }

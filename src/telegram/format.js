@@ -34,6 +34,12 @@ export function candidateSummary(candidate, decision = null) {
       `Fees: ${fmtSol(candidate.metrics.gmgnTotalFeesSol)} SOL`,
       `Grad vol: ${fmtUsd(candidate.metrics.graduatedVolumeUsd)}`,
     ].join(' · '),
+    candidate.metrics?.feeTvl24h != null ? [
+      `24h fee/TVL: ${fmtPct(Number(candidate.metrics.feeTvl24h) * 100)}`,
+      `24h vol/TVL: ${Number(candidate.metrics.volumeTvl24h || 0).toFixed(2)}x`,
+      `Age: ${Number(candidate.metrics.tokenAgeHours || 0).toFixed(1)}h`,
+      `Dump: ${fmtPct(candidate.metrics.dumpFromHighPercent)}`,
+    ].join(' · ') : null,
     [
       `Holders: ${candidate.metrics.holderCount || '?'}`,
       `Top20: ${fmtPct(candidate.holders.top20Percent)}`,
@@ -81,6 +87,14 @@ export function compactCandidateLine(row, index = null) {
   ].filter(Boolean).join(' · ');
 }
 
+export function formatDecisionConfidence(decision = {}) {
+  const verdict = String(decision.verdict || 'WATCH').toUpperCase();
+  const confidence = Number(decision.confidence);
+  if (!Number.isFinite(confidence)) return 'n/a';
+  if (confidence === 0 && verdict !== 'BUY') return 'n/a';
+  return fmtPct(confidence);
+}
+
 export function batchRevealSummary(batchId, rows, decision, triggerCandidateId = null) {
   const selected = rows.find(row => row.id === Number(decision.selected_candidate_id));
   const trigger = rows.find(row => row.id === Number(triggerCandidateId));
@@ -90,25 +104,33 @@ export function batchRevealSummary(batchId, rows, decision, triggerCandidateId =
     `Batch: <b>#${batchId}</b> · Screened: <b>${rows.length}</b>`,
     trigger ? `Trigger: ${compactCandidateLine(trigger)}` : null,
     selected ? `Pick: ${compactCandidateLine(selected)}` : 'Pick: <b>none</b>',
-    `Decision: <b>${escapeHtml(decision.verdict || 'WATCH')}</b> ${fmtPct(decision.confidence || 0)}`,
+    `Decision: <b>${escapeHtml(decision.verdict || 'WATCH')}</b> · Confidence: ${formatDecisionConfidence(decision)}`,
     decision.reason ? `Reason: ${escapeHtml(String(decision.reason).slice(0, 420))}` : null,
   ];
   return lines.filter(Boolean).join('\n');
 }
 
 export function formatPosition(position) {
-  const pnl = position.pnl_percent != null
+  const entryMcap = Number(position.entry_mcap || 0);
+  const highMcap = Number(position.high_water_mcap || 0);
+  const currentMcap = position.status === 'open'
+    ? Number(position.mcap ?? position.current_mcap)
+    : Number(position.exit_mcap ?? position.mcap ?? position.high_water_mcap ?? position.entry_mcap);
+  const hasCurrentMcap = Number.isFinite(currentMcap) && currentMcap > 0;
+  const currentMcapText = position.status === 'open' && !hasCurrentMcap ? 'stale' : fmtUsd(currentMcap);
+  const currentPnl = position.pnl_percent != null && position.status !== 'open'
     ? Number(position.pnl_percent)
-    : position.entry_mcap && position.high_water_mcap
-      ? (Number(position.high_water_mcap) / Number(position.entry_mcap) - 1) * 100
-      : 0;
+    : entryMcap > 0 && hasCurrentMcap
+      ? (currentMcap / entryMcap - 1) * 100
+      : NaN;
+  const bestPnl = entryMcap > 0 && highMcap > 0 ? (highMcap / entryMcap - 1) * 100 : currentPnl;
   return [
     `📍 <b>${escapeHtml(position.symbol || short(position.mint))}</b> #${position.id}`,
     `Token: <a href="${gmgnLink(position.mint)}">${short(position.mint)}</a>`,
     `Status: <b>${escapeHtml(position.status)}</b> · Mode: <b>${escapeHtml(position.execution_mode || 'dry_run')}</b> · Strategy: <b>${escapeHtml(position.strategy_id || 'sniper')}</b>`,
     position.entry_signature ? `Entry TX: <a href="${txLink(position.entry_signature)}">${short(position.entry_signature)}</a>` : null,
-    `Entry mcap: ${fmtUsd(position.entry_mcap)} · High: ${fmtUsd(position.high_water_mcap)}`,
-    `Size: ${fmtSol(position.size_sol)} SOL · PnL: ${fmtPct(pnl)}`,
+    `Entry mcap: ${fmtUsd(position.entry_mcap)} · Current mcap: ${currentMcapText} · High: ${fmtUsd(position.high_water_mcap)}`,
+    `Size: ${fmtSol(position.size_sol)} SOL · PnL: ${fmtPct(currentPnl)} · Best: ${fmtPct(bestPnl)}`,
     `TP: ${fmtPct(position.tp_percent)} · SL: ${fmtPct(position.sl_percent)} · Trail: ${position.trailing_enabled ? `${fmtPct(position.trailing_percent)}` : 'off'}`,
     position.exit_reason ? `Exit: ${escapeHtml(position.exit_reason)} at ${fmtUsd(position.exit_mcap)} (${fmtPct(position.pnl_percent)})` : null,
     position.exit_signature ? `Exit TX: <a href="${txLink(position.exit_signature)}">${short(position.exit_signature)}</a>` : null,

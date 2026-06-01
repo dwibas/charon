@@ -5,6 +5,7 @@ import { fetchJupiterAsset, fetchJupiterHolders, fetchJupiterChartContext } from
 import { fetchSavedWalletExposure } from '../enrichment/wallets.js';
 import { fetchTwitterNarrative } from '../enrichment/twitter.js';
 import { gmgnLink } from '../format.js';
+import { evaluateFeeTvlDumpGuard } from '../trading/entryGuards.js';
 
 export function buildFeeSnapshot(fee, signature) {
   return {
@@ -112,7 +113,15 @@ export function filterCandidate(candidate) {
     }
   }
 
-  return { passed: failures.length === 0, failures, strategy: strat.id };
+  const feeTvlDump = evaluateFeeTvlDumpGuard(candidate, strat);
+  if (!feeTvlDump.passed) failures.push(...feeTvlDump.failures);
+
+  return {
+    passed: failures.length === 0,
+    failures,
+    strategy: strat.id,
+    feeTvlDump: feeTvlDump.metrics,
+  };
 }
 
 export async function buildCandidate({ mint, fee = null, signature = null, graduatedCoin = null, trendingToken = null, route }) {
@@ -187,5 +196,13 @@ export async function buildCandidate({ mint, fee = null, signature = null, gradu
     createdAtMs: now(),
   };
   candidate.filters = filterCandidate(candidate);
+  if (candidate.filters?.feeTvlDump) {
+    candidate.metrics.feeTvl24h = candidate.filters.feeTvlDump.feeTvl24h;
+    candidate.metrics.volumeTvl24h = candidate.filters.feeTvlDump.volumeTvl24h;
+    candidate.metrics.tokenAgeHours = candidate.filters.feeTvlDump.tokenAgeHours;
+    candidate.metrics.dumpFromHighPercent = candidate.filters.feeTvlDump.dumpFromHighPercent;
+    candidate.metrics.fees24hUsd = candidate.filters.feeTvlDump.fees24hUsd;
+    candidate.metrics.volume24hUsd = candidate.filters.feeTvlDump.volume24hUsd;
+  }
   return candidate;
 }

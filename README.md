@@ -91,6 +91,7 @@ GMGN enriches candidates with holder count, liquidity, fee data, and social link
 
 ```env
 ENABLE_LLM=true
+LLM_PROVIDER=openai_compatible
 LLM_BASE_URL=https://api.minimax.io/v1
 LLM_API_KEY=
 LLM_MODEL=MiniMax-M2.7
@@ -99,7 +100,18 @@ LLM_CANDIDATE_PICK_COUNT=10
 LLM_CANDIDATE_MAX_AGE_MS=600000
 ```
 
-`LLM_BASE_URL` accepts any OpenAI-compatible endpoint. The default is MiniMax M2.7, which is fast and cheap for this use case. OpenAI (`https://api.openai.com/v1`), Groq, and local Ollama endpoints all work — just set the matching `LLM_MODEL`.
+`LLM_PROVIDER=openai_compatible` uses the normal chat-completions API. `LLM_BASE_URL` accepts any OpenAI-compatible endpoint. The default is MiniMax M2.7, which is fast and cheap for this use case. OpenAI (`https://api.openai.com/v1`), Groq, and local Ollama endpoints all work — just set the matching `LLM_MODEL`.
+
+Experimental Codex CLI mode uses Codex OAuth instead of `LLM_API_KEY`:
+
+```env
+LLM_PROVIDER=codex_cli
+CODEX_CLI_TIMEOUT_MS=45000
+CODEX_CLI_COMMAND=codex
+CODEX_CLI_ARGS=exec
+```
+
+Codex CLI mode requires `npm install -g @openai/codex` and `codex login`. Treat it as experimental: use `TRADING_MODE=dry_run` or `confirm`, because it shells out to the Codex coding-agent CLI, is slower than HTTP LLM APIs, and falls back to `WATCH` on timeout, non-zero exit, or malformed JSON.
 
 Set `ENABLE_LLM=false` to disable LLM globally. Individual strategies also have a `use_llm` flag — strategies with `use_llm: false` (e.g. `degen`) auto-approve any candidate that passes filters without calling the LLM.
 
