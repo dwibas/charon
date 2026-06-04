@@ -102,16 +102,39 @@ LLM_CANDIDATE_MAX_AGE_MS=600000
 
 `LLM_PROVIDER=openai_compatible` uses the normal chat-completions API. `LLM_BASE_URL` accepts any OpenAI-compatible endpoint. The default is MiniMax M2.7, which is fast and cheap for this use case. OpenAI (`https://api.openai.com/v1`), Groq, and local Ollama endpoints all work — just set the matching `LLM_MODEL`.
 
-Experimental Codex CLI mode uses Codex OAuth instead of `LLM_API_KEY`:
+### Codex CLI provider
 
-```env
-LLM_PROVIDER=codex_cli
-CODEX_CLI_TIMEOUT_MS=45000
-CODEX_CLI_COMMAND=codex
-CODEX_CLI_ARGS=exec
+Codex CLI mode uses Codex OAuth instead of `LLM_API_KEY` for candidate-screening decisions. This is useful when you want Charon to call the local `codex` command rather than an OpenAI-compatible HTTP endpoint.
+
+Install and authenticate once on the host:
+
+```bash
+npm install -g @openai/codex
+codex login
+codex login status
 ```
 
-Codex CLI mode requires `npm install -g @openai/codex` and `codex login`. Treat it as experimental: use `TRADING_MODE=dry_run` or `confirm`, because it shells out to the Codex coding-agent CLI, is slower than HTTP LLM APIs, and falls back to `WATCH` on timeout, non-zero exit, or malformed JSON.
+Then configure `.env` with non-secret provider settings like this:
+
+```env
+ENABLE_LLM=true
+LLM_PROVIDER=codex_cli
+LLM_MODEL=gpt-5.4-mini
+CODEX_CLI_COMMAND=codex
+CODEX_CLI_ARGS=exec -m gpt-5.4-mini --sandbox read-only --skip-git-repo-check
+CODEX_CLI_TIMEOUT_MS=90000
+LLM_CANDIDATE_PICK_COUNT=10
+LLM_CANDIDATE_MAX_AGE_MS=600000
+```
+
+Operational notes:
+
+- Keep `LLM_MODEL` and the `-m ...` value inside `CODEX_CLI_ARGS` identical. `LLM_MODEL` documents the active model in Charon config; `CODEX_CLI_ARGS` is what the spawned CLI actually receives.
+- `LLM_API_KEY` is not required for the `codex_cli` decision path, but HTTP-only helper features may still need it if enabled elsewhere.
+- Use `TRADING_MODE=dry_run` or `confirm` until you have verified Codex decisions in logs/database. Codex CLI mode shells out to an agent CLI, is slower than HTTP LLM APIs, and falls back to `WATCH` on timeout, non-zero exit, or malformed JSON.
+- Recommended sandbox is `--sandbox read-only`; Charon only needs a JSON decision, not file edits or tool execution.
+
+After changing provider/model settings, restart Charon and verify from logs or a one-shot decision probe that `fallback=false` and a parsed verdict is returned.
 
 Set `ENABLE_LLM=false` to disable LLM globally. Individual strategies also have a `use_llm` flag — strategies with `use_llm: false` (e.g. `degen`) auto-approve any candidate that passes filters without calling the LLM.
 
